@@ -1,12 +1,4 @@
-Perfeito, Felipe! 💪  
-Entendi o problema: no relatório “Somente no Controle” estão aparecendo fundos com SIT ≠ “A” (por exemplo, “I” ou “T”). A raiz provável é dupla:
 
-1) a sua rotina que **monta o `controle_prep`** traz só `CNPJ`, `Fundos` e `COD GFI` — **sem a coluna de situação/SIT**. Depois, quando você tenta filtrar por situação em `df_controle_fora`, **essa coluna já não existe**, então nada é filtrado. [1](https://banco365-my.sharepoint.com/personal/t1092497_interno_bb_com_br/Documents/Arquivos%20de%20Microsoft%20Copilot%20Chat/test.py)  
-2) o detector de coluna de status **não reconhece “SIT”** como nome de coluna (prioriza “situação”, “status”…), então mesmo que a coluna exista, ele pode não achá-la. No seu Controle há de fato uma coluna “SIT”. [1](https://banco365-my.sharepoint.com/personal/t1092497_interno_bb_com_br/Documents/Arquivos%20de%20Microsoft%20Copilot%20Chat/test.py)[2](https://banco365-my.sharepoint.com/personal/t1092497_interno_bb_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B3C11A22E-4DC9-4D8F-A303-7BF1C064C774%7D&file=CONTROLE%20FIC%20-%20Copia.xlsx&action=default&mobileredirect=true)
-
-Abaixo te entrego (1) um **prompt poderoso** para você passar a qualquer IA/coder (sem precisar expor os XLSX) com o pedido exato de correção e critérios; e (2) um **passo‑a‑passo de implementação** (em texto, sem colar código), apontando os pontos corretos do seu fluxo atual.
-
----
 
 ## 1) Prompt poderoso (copie e cole para a IA/coder)
 
@@ -96,23 +88,4 @@ Assim, quando `df_controle_fora` for gerado, ele **já** estará restrito a ativ
 - **No pipeline do botão “Processar”**:  
   • Garanta que o filtro de situação ocorra **antes** de montar `df_controle_fora` (ou assegure que `df_controle_fora` ainda tenha `SIT` e chame `filtrar_controle_por_situacao` com efeito). Hoje você chama o filtro **depois** de gerar `df_controle_fora`, mas como `controle_prep` perdeu `SIT`, esse filtro não faz nada. [1](https://banco365-my.sharepoint.com/personal/t1092497_interno_bb_com_br/Documents/Arquivos%20de%20Microsoft%20Copilot%20Chat/test.py)
 
----
 
-## 4) Checklist de aceite (cola na sua área de QA)
-
-- [ ] “Somente no Controle” **não** exibe nenhum CNPJ com SIT ∈ {I, T, P, …}.  
-- [ ] “Em Ambos” e “Somente no CadFi” mantêm **mesmo número de linhas** que antes da correção.  
-- [ ] Se **não** houver coluna de situação: o app **não quebra**, mostra **aviso** e segue (sem filtrar).  
-- [ ] `CNPJ` preserva a máscara e `COD GFI` continua preenchido somente onde houver match.  
-- [ ] O tempo de processamento **permanece equivalente** (sem regressão perceptível).
-
----
-
-## 5) Resumo técnico da causa raiz (para registro)
-
-- **Perda de contexto da coluna de situação**: a rotina de carga do Controle descarta `SIT` cedo demais; assim, o filtro posterior não tem efeito. [1](https://banco365-my.sharepoint.com/personal/t1092497_interno_bb_com_br/Documents/Arquivos%20de%20Microsoft%20Copilot%20Chat/test.py)  
-- **Reconhecimento incompleto do nome da coluna**: o utilitário não prioriza “SIT”, embora o arquivo real possua exatamente esse cabeçalho. [2](https://banco365-my.sharepoint.com/personal/t1092497_interno_bb_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B3C11A22E-4DC9-4D8F-A303-7BF1C064C774%7D&file=CONTROLE%20FIC%20-%20Copia.xlsx&action=default&mobileredirect=true)
-
----
-
-Se quiser, eu te devolvo um **diff lógico linha‑a‑linha** (em texto) dizendo “no bloco X, após Y, inserir Z”, para você repassar direto — sem colar código sensível. Quer que eu faça isso agora?
