@@ -73,7 +73,7 @@ def _normalize_competencia_to_mm_yyyy(raw: Optional[str]) -> Optional[str]:
 
 def carregar_controle_fic(arquivo):
     """
-    Lê do Controle FIC as colunas 'Fundos', 'CNPJ' e 'COD GFI' (em qualquer ordem/coluna).
+    Lê do Controle FIC as colunas 'Fundos', 'CNPJ', 'COD GFI' e, se existir, propaga também 'SIT' (ou variação).
     Funciona para .xlsx e .xls (precisa de xlrd p/ .xls).
     """
     # 1) Ler tudo como texto (evita depender de letras de coluna)
@@ -81,7 +81,7 @@ def carregar_controle_fic(arquivo):
     engine = "openpyxl" if ext == "xlsx" else None  # deixe None p/ pandas escolher xlrd p/ .xls
     df = pd.read_excel(arquivo, dtype=str, engine=engine)
 
-    # 2) Normalizar cabeçalhos
+    # 2) Normalizar cabeçalhos (mesma normalização que havia)
     import unicodedata, re
     def norm(s):
         s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode("utf-8")
@@ -101,13 +101,27 @@ def carregar_controle_fic(arquivo):
     col_cnpj   = pick("CNPJ")
     col_gfi    = pick("COD GFI", "COD_GFI", "CODIGO GFI", "CODIGO_GFI", "GFI")
 
-    # 4) Montar saída mínima
+    # 3.1) Tentar localizar coluna de situação (SIT) — olhar por chaves curtas e variações
+    col_sit = None
+    for cand in ("SIT", "SITUAÇÃO", "SITUACAO", "SITUACAO_DO_FUNDO", "STATUS", "STATUS_DO_FUNDO"):
+        if cand in colmap:
+            col_sit = colmap[cand]
+            break
+    # fallback: procura qualquer header que contenha 'SIT' ou 'SITUAC'
+    if not col_sit:
+        for k, original in colmap.items():
+            if "SIT" in k or "SITUAC" in k:
+                col_sit = original
+                break
+
+    # 4) Montar saída mínima (propagando SIT se encontrado)
     out = pd.DataFrame()
     if col_cnpj:   out["CNPJ"]   = df[col_cnpj]
     if col_fundos: out["Fundos"] = df[col_fundos]
     if col_gfi:    out["COD GFI"]= df[col_gfi]
+    if col_sit:    out["SIT"]    = df[col_sit].astype(str).fillna("")
 
-    # 5) Normalizar CNPJ e tirar duplicatas
+    # 5) Normalizar CNPJ e tirar duplicatas (mantém lógica atual)
     def so_digitos(s): return re.sub(r"\D", "", str(s or ""))
     def normaliza_cnpj(c):
         d = so_digitos(c)
@@ -119,15 +133,20 @@ def carregar_controle_fic(arquivo):
         return f"{d[:2]}.{d[2:5]}.{d[5:8]}/{d[8:12]}-{d[12:]}"
 
     if "CNPJ" in out.columns:
-        out["CNPJ"] = out["CNPJ"].apply(lambda x: formatar_cnpj(x) if pd.notna(x) else None)
+        out["CNPJ"] = out["CNPJ"].apply(lambda x: formatar_cnpj(normaliza_cnpj(x)) if pd.notna(x) else None)
         out = out.dropna(subset=["CNPJ"]).drop_duplicates(subset=["CNPJ"], keep="first")
 
-    # Garantir colunas
-    for need in ["CNPJ", "Fundos", "COD GFI"]:
+    # 6) Garantir colunas (agora incluindo SIT)
+    for need in ["CNPJ", "Fundos", "COD GFI", "SIT"]:
         if need not in out.columns:
             out[need] = ""
 
-    return out[["CNPJ", "Fundos", "COD GFI"]]
+    # 7) Retornar com SIT no final (se existir) — facilita debug, mas preserva compatibilidade com as 3 colunas
+    cols_order = ["CNPJ", "Fundos", "COD GFI"]
+    if "SIT" in out.columns:
+        cols_order.append("SIT")
+    return out[cols_order]
+
      
 
 # === Helpers para validação por data exata OU por mês/ano (compatível com Python 3.9) ===
@@ -644,17 +663,28 @@ def _norm_header_key(s: str) -> str:
     return s
 
 def _encontrar_coluna_status(df: pd.DataFrame):
+    """
+    Localiza a coluna que contém a situação/status no DataFrame.
+    Prioriza correspondência exata curta ('sit') e variações comuns.
+    Retorna o nome original da coluna (caso sensível à caixa).
+    """
     norm_map = {_norm_header_key(c): c for c in df.columns}
+
+    # Prioridade: inclua 'sit' de alta prioridade (coluna curta)
     prioridade = [
-        "situacao", "situação", "situacao_do_fundo", "situcao", "status", "status_do_fundo"
+        "sit", "situacao", "situacao_do_fundo", "situacao_do_fundo", "situacao",
+        "situacao_do_fundo", "situcao", "status", "status_do_fundo"
     ]
     for key in prioridade:
         if key in norm_map:
             return norm_map[key]
+
+    # fallback heurístico (mantém compatibilidade)
     candidatos = []
     for k, original in norm_map.items():
         score = 0
-        if "situac" in k or "situa" in k: score += 3
+        if "situac" in k or "situa" in k: score += 4
+        if k == "sit":                    score += 5
         if "status" in k:                 score += 2
         if "fundo" in k:                  score += 1
         if "cnpj" in k:                   score = -1
@@ -664,6 +694,9 @@ def _encontrar_coluna_status(df: pd.DataFrame):
         candidatos.sort(reverse=True, key=lambda x: x[0])
         return candidatos[0][1]
     return None
+
+
+
 
 VALORES_ATIVOS = {
     normaliza_texto("Em Funcionamento Normal"),
@@ -716,6 +749,7 @@ def filtrar_cadfi(df):
         "BB TOP DI RENDA FIXA REFERENCIADO DI LONGO PRAZO FIC FIF RESPONSABILIDADE LIMITADA",
         "BB PRATA FUNDO DE INVESTIMENTO EM COTAS DE FUNDOS DE INVESTIMENTO FINANCEIRO MULTIMERCADO",
         "BB DIVERSIFICAÇÃO FUNDO MÚTUO DE PRIVATIZAÇÃO - FGTS CARTEIRA LIVRE RESPONSABILIDADE LIMITADA",
+        "BB ASSET RENDA FIXA SIMPLES FUNDO DE INVESTIMENTO EM COTAS DE FUNDOS DE INVESTIMENTO FINANCEIRO RESPONSABILIDADE LIMITADA",
     ]
     padrao_excluir = "(" + "|".join(map(re.escape, nomes_excluir)) + ")"
 
@@ -799,7 +833,7 @@ EXCLUIR_SITUACAO_CONTROLE = ("I", "P", "T")
 
 def filtrar_controle_por_situacao(df: pd.DataFrame,
                                   excluir_codigos=EXCLUIR_SITUACAO_CONTROLE) -> pd.DataFrame:
-    if df is None or df.empty:   # ✅ corrigido
+    if df is None or df.empty:   # ✅ corrigido     755+ 105 + 84
         return df
 
     col_status = _encontrar_coluna_status(df)
@@ -888,8 +922,8 @@ def remover_segundos_colunas(df: pd.DataFrame, colunas, formato: str = "%Y-%m-%d
     return df
 
 def _competencia_to_01_mm_aaaa(s: Optional[str]) -> Optional[str]:
-    """Converte valores como '2025-08', '08/2025' ou 'dd/mm/aaaa' para '01/MM/AAAA'.
-       Mantém 'Não possui' e vazios como estão.
+    """Converte '2025-08', '08/2025' ou 'dd/mm/aaaa' para '01/MM/AAAA'.
+    Mantém 'Não possui' e vazios como vieram.
     """
     if s is None:
         return None
@@ -897,28 +931,29 @@ def _competencia_to_01_mm_aaaa(s: Optional[str]) -> Optional[str]:
     if not t or t.upper() == "NÃO POSSUI":
         return t
 
-    # Caso: AAAA-MM  -> 01/MM/AAAA
+    # AAAA-MM -> 01/MM/AAAA
     m = re.fullmatch(r"(20\d{2})-(\d{1,2})", t)
     if m:
         ano, mes = int(m.group(1)), int(m.group(2))
         if 1 <= mes <= 12:
             return f"01/{mes:02d}/{ano}"
 
-    # Caso: MM/AAAA  -> 01/MM/AAAA
+    # MM/AAAA -> 01/MM/AAAA
     m = re.fullmatch(r"(\d{1,2})/(20\d{2})", t)
     if m:
         mes, ano = int(m.group(1)), int(m.group(2))
         if 1 <= mes <= 12:
             return f"01/{mes:02d}/{ano}"
 
-    # Caso: DD/MM/AAAA -> força dia 01
+    # DD/MM/AAAA -> força dia 01
     m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(20\d{2})", t)
     if m:
-        mes, ano = int(m.group(2)), int(m.group(3))
-        if 1 <= mes <= 12:
-            return f"01/{mes:02d}/{ano}"
+        dd, mm, ano = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mm <= 12:
+            return f"01/{mm:02d}/{ano}"
 
-    # Sem correspondência -> devolve como veio
+    # Não casou? mantém como veio (antes retornava None)
+    return t
 
 
 def parse_protocolos_cda_xlsx(arquivo_xlsx) -> pd.DataFrame:
@@ -1210,27 +1245,41 @@ def parse_protocolo_balancete(arquivo_excel) -> pd.DataFrame:
             i += 1
             continue
 
-        # NOME DO ARQUIVO -> captura 082025 => 08/2025
+        # NOME DO ARQUIVO -> captura 082025 => 08/2025 (agora olha até 4 linhas abaixo)
         if up.startswith("NOME DO ARQUIVO"):
-            if i + 1 < n:
-                m = pattern_mmYYYY6.search(linhas[i + 1])
+            for j in range(i + 1, min(i + 5, n)):  # varre próximas linhas
+                m = pattern_mmYYYY6.search(linhas[j])
                 if m:
                     mm, yyyy = m.group(1)[:2], m.group(1)[2:]
                     current["mmYYYY_file"] = f"{mm}/{yyyy}"
-            i += 2
+                    break
+            i += 1  # avança só uma posição; o while segue varrendo normalmente
             continue
 
         # COMPETÊNCIA
         if up.startswith("COMPET"):
             val = linhas[i + 1].strip() if (i + 1) < n else ""
-            m2 = re.search(r"(\b\d{2}/\d{4}\b)", val)
+
+            # 1) Tenta capturar MM/AAAA diretamente (padrão ideal)
+            m2 = re.search(r"\b(\d{2})/(20\d{2})\b", val)
             if m2:
-                current["comp"] = m2.group(1)
+                current["comp"] = f"{m2.group(1)}/{m2.group(2)}"
             else:
-                m3 = re.search(r"\b(\d{2})/(\d{2})/(\d{4})\b", val)
+                # 2) Tenta data com dia: aceitar MM/DD/AAAA ou DD/MM/AAAA
+                m3 = re.search(r"\b(\d{2})/(\d{2})/(20\d{2})\b", val)
                 if m3:
-                    dd, mm, yyyy = m3.groups()
-                    current["comp"] = f"{mm}/{yyyy}"
+                    a, b, ano = int(m3.group(1)), int(m3.group(2)), int(m3.group(3))
+                    # Heurística de plausibilidade:
+                    if a > 12 and 1 <= b <= 12:
+                        # DD/MM/AAAA -> usa MM = b
+                        current["comp"] = f"{b:02d}/{ano}"
+                    elif b > 12 and 1 <= a <= 12:
+                        # MM/DD/AAAA -> usa MM = a
+                        current["comp"] = f"{a:02d}/{ano}"
+                    else:
+                        # Ambíguo (ambos <= 12): preferir MM/DD/AAAA (observado nos protocolos)
+                        current["comp"] = f"{a:02d}/{ano}"
+
             i += 2
             continue
 
@@ -1308,7 +1357,7 @@ def parse_protocolo_balancete_from_pdf(uploaded_pdf) -> pd.DataFrame:
 # ========================== INTERFACE STREAMLIT ==========================
 st.set_page_config(page_title="Batimento de Fundos - CadFi x Controle FIC",page_icon="banco_do_brasil_amarelo.ico", layout="centered")
 
-st.title("Batimento de Fundos — Contabilidade")
+st.title("Batimento de Fundos — Contabilidade FIC")
 st.subheader("📊 1° - Batimento de Fundos — CadFi x Controle FIC")
 st.caption("Interface web dos Batimentos. Faça o upload dos dois arquivos e clique em **Processar**.")
 
@@ -1330,10 +1379,12 @@ if processar:
             cadfi_raw = carregar_excel(cadfi_file)                    # mantém como está (xlsx)
             cadfi_filtrado = filtrar_cadfi(cadfi_raw)
 
-            # novo: lê só E,J,W do Controle FIC (xls ou xlsx)
             controle_prep = carregar_controle_fic(controle_file)
 
+            # APLICA FILTRO DE SIT A JAQUI (recomendado) — se a coluna não existir é noop
+            controle_prep = filtrar_controle_por_situacao(controle_prep)
 
+            # segue comparações com controle já restrito a SIT == 'A'
             df_fora = comparar_cnpjs(cadfi_filtrado, controle_prep)
             df_comum = comparar_fundos_em_comum(cadfi_filtrado, controle_prep)
             df_controle_fora = comparar_controle_fora_cadfi(cadfi_filtrado, controle_prep)
