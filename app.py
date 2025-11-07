@@ -1260,25 +1260,34 @@ def parse_protocolo_balancete(arquivo_excel) -> pd.DataFrame:
         if up.startswith("COMPET"):
             val = linhas[i + 1].strip() if (i + 1) < n else ""
 
-            # 1) Tenta capturar MM/AAAA diretamente (padrão ideal)
+            # 1) MM/AAAA
             m2 = re.search(r"\b(\d{2})/(20\d{2})\b", val)
             if m2:
                 current["comp"] = f"{m2.group(1)}/{m2.group(2)}"
             else:
-                # 2) Tenta data com dia: aceitar MM/DD/AAAA ou DD/MM/AAAA
+                # 2) DD/MM/AAAA ou MM/DD/AAAA
                 m3 = re.search(r"\b(\d{2})/(\d{2})/(20\d{2})\b", val)
                 if m3:
                     a, b, ano = int(m3.group(1)), int(m3.group(2)), int(m3.group(3))
-                    # Heurística de plausibilidade:
                     if a > 12 and 1 <= b <= 12:
-                        # DD/MM/AAAA -> usa MM = b
-                        current["comp"] = f"{b:02d}/{ano}"
-                    elif b > 12 and 1 <= a <= 12:
-                        # MM/DD/AAAA -> usa MM = a
-                        current["comp"] = f"{a:02d}/{ano}"
+                        current["comp"] = f"{b:02d}/{ano}"   # DD/MM/AAAA
                     else:
-                        # Ambíguo (ambos <= 12): preferir MM/DD/AAAA (observado nos protocolos)
-                        current["comp"] = f"{a:02d}/{ano}"
+                        current["comp"] = f"{a:02d}/{ano}"   # MM/DD/AAAA ou ambíguo
+
+                else:
+                    # 3) NOVO: ISO AAAA-MM-DD (com ou sem hora)
+                    m4 = re.search(r"\b(20\d{2})-(\d{2})-(\d{2})\b", val)
+                    if m4:
+                        ano, mes = int(m4.group(1)), int(m4.group(2))
+                        current["comp"] = f"{mes:02d}/{ano}"
+                    else:
+                        # 4) NOVO: fallback genérico via pandas
+                        try:
+                            ts = pd.to_datetime(val, dayfirst=True, errors="coerce")
+                            if pd.notna(ts):
+                                current["comp"] = f"{int(ts.month):02d}/{ts.year}"
+                        except Exception:
+                            pass
 
             i += 2
             continue
